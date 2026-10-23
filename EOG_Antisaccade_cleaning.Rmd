@@ -1,0 +1,63 @@
+---
+title: "EOG_Antisaccade_cleaning"
+output: html_document
+date: "2025-01-17"
+#####COPY OF "/Volumes/Hera/Victoria/Antisaccade-impulsive-control/EyeLink/Dollarreward_data_cleaning.Rmd"
+####ALTERED FOR cleaning dollarreward data but from EOG (processed from raw bdf files in MATLAB "/Volumes/Hera/Projects/7TBrainMech/scripts/eeg/eog_cal/eog_ec_playground.m")
+---
+
+```{r}
+#install.packages("eyelinker")
+#install.packages("devtools")
+
+library("MASS")
+library("dplyr")
+library("tidyr")
+library("stringr")
+library("lubridate")
+
+environment(select)
+
+select <- dplyr::select
+```
+
+```{r}
+#read in data
+all_ppt_table <- read.csv("/Volumes/Hera/Projects/7TBrainMech/scripts/eeg/eog_cal/habit_anti_all_ppt_table.csv") #previous version was all_ppt_table.csv then gained like 10 people
+
+#fix date column
+all_ppt_table <- all_ppt_table %>%
+  mutate(vdate = parse_date_time(as.character(vdate), orders = c("%Y%m%d")))
+
+#turn seconds into milliseconds
+all_ppt_table$lat <-all_ppt_table$lat*1000
+
+#ONLY SELECT NEUTRAL TRIALS
+neu_all_ppt_table <- subset(all_ppt_table, stim_chan_code>140 & stim_chan_code<147)
+```
+
+```{r}
+#make a dataset that includes mean latency for each ppt and adds up trial scores
+#group together trial type and mean latency for each per ppt
+neu_all_ppt_avg <- neu_all_ppt_table %>% group_by(lunaid, vdate, score) %>% filter(!(score == "-1")) %>%
+  summarise(n=n(),
+           mean_lat=mean(lat, na.rm=T), sd_lat=sd(lat, na.rm=T), 
+           min_lat=min(lat,na.rm=T)) %>% ungroup()
+
+#make wide format
+neu_all_ppt_avg_wide <- neu_all_ppt_avg %>% pivot_wider(names_from="score", values_from = c("n", "mean_lat", "sd_lat", "min_lat"))
+
+  neu_all_ppt_avg_wide$n_0[is.na(neu_all_ppt_avg_wide$n_0)] <- 0
+  neu_all_ppt_avg_wide$n_1[is.na(neu_all_ppt_avg_wide$n_1)] <- 0
+  neu_all_ppt_avg_wide$n_2[is.na(neu_all_ppt_avg_wide$n_2)] <- 0
+
+#mutate percent
+final_as_eog <- neu_all_ppt_avg_wide %>% mutate(total_trials= n_1 + n_2 + n_0) %>% mutate(trials_1_2 = n_1 + n_2) %>% mutate(percent_1_2=(trials_1_2/total_trials)*100) %>% mutate(percent_ec = (n_2 / total_trials) * 100) %>% mutate(percent_ec_1_2 = (n_2/ trials_1_2) * 100) %>% mutate(percent_corr = (n_1 / total_trials) * 100) %>% mutate(percent_corr_1_2 = (n_1/ trials_1_2) * 100) %>% mutate(var_lat_1 = (sd_lat_1/ mean_lat_1))
+
+#keep only first visit of repeat ids #distinct finds duplicate rows and keeps only the first row (earlier date)
+final_as_eog <- final_as_eog %>% distinct(lunaid, .keep_all = TRUE)
+
+length(unique(final_as_eog$lunaid)) #178
+
+```
+

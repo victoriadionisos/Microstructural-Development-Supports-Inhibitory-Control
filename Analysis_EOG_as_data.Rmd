@@ -1,0 +1,374 @@
+---
+title: "FYP_EOG_as_data"
+output: html_document
+date: "2025-01-21"
+---
+
+```{r setup, include=FALSE}
+#install.packages("performance")
+#install.packages("ppcor")
+library("dplyr")
+library("tidyr")
+library("ggplot2")
+library("performance")
+library("ppcor")
+library("lubridate")
+library("mgcv")
+library("gratia")
+environment(select)
+
+select <- dplyr::select
+```
+
+```{r}
+#this age dataset ends up being different than others because I am extracting age at EEG visits rather than MRI visits
+#make age datatset for Habit #copied from Habit packet #manually copied only EEG visits and deleted 1 that did not complete visit
+Habit_packet <- read.csv("/Volumes/Hera/Victoria/HabitR37_packet.csv")
+#/Antisaccade-impulsive-control/Habit_dems/HabitR37_packet_012725.csv
+
+HabitEEG_age_id <- Habit_packet %>% subset(VISIT.TYPE == "EEG") %>% select(ID, DATE, D.O.B., AGE, SEX)
+
+HabitEEG_age_id <- HabitEEG_age_id %>% rename(lunaid = "ID") %>% rename(vdate="DATE")
+HabitEEG_age_id$vdate <- parse_date_time(as.character(HabitEEG_age_id$vdate), orders = c("%m/%d/%Y", "%m/%d/%y"))
+HabitEEG_age_id$D.O.B. <- parse_date_time(as.character(HabitEEG_age_id$D.O.B.), orders = c("%m/%d/%Y", "%m/%d/%y"))
+
+#recode sex M/F to 1/2
+#HabitEEG_age_id <- HabitEEG_age_id %>% mutate(SEX = recode(SEX, "M" = 1, "F" = 2))
+
+#calculate decimalized age
+HabitEEG_age_id <- HabitEEG_age_id %>% mutate(Dec_Age = as.numeric(difftime(vdate, D.O.B., units = "days")) / 365.25)
+
+#keep only first visit of repeat ids #distinct finds duplicate rows and keeps only the first row (earlier date)
+HabitEEG_age_id_distinct <- HabitEEG_age_id %>% distinct(lunaid, .keep_all = TRUE)
+
+length(unique(HabitEEG_age_id_distinct$lunaid))
+summary(HabitEEG_age_id_distinct$Dec_Age)
+
+hist1 <- hist(HabitEEG_age_id_distinct$Dec_Age, breaks = 10, col = "steelblue", border = "black")
+
+ggplot(HabitEEG_age_id_distinct, aes(Dec_Age)) +
+  geom_histogram(binwidth = 2, fill="steelblue", color="black", size=0.5) +
+  theme_minimal()
+
+ggplot(HabitEEG_age_id_distinct, aes(x=Dec_Age)) +
+  geom_histogram(binwidth = 0.85, fill="steelblue")+
+  facet_wrap(~ SEX, nrow = 1) +
+  theme(legend.position="right")+
+  theme_minimal()
+
+#_________________________
+full_ppt_sample <- merge(HabitEEG_age_id_distinct, HabitMR_age_id_distinct, by ="lunaid") #178 subjects
+
+full_ppt_sample <- full_ppt_sample %>% 
+  rowwise() %>%
+  mutate(Dec_Age_mean = mean(c(Dec_Age.x, Dec_Age.y), na.rm = TRUE)) %>%
+  ungroup() %>%
+  select(-c("Dec_Age.x", "Dec_Age.y"))
+sd(full_ppt_sample$Dec_Age_mean)
+
+full_ppt_sample <- full_ppt_sample %>% 
+  rowwise() %>%
+  mutate(sex = first(c(SEX.x, SEX.y))) %>%
+  ungroup() %>%
+  select(-c("SEX.x", "SEX.y")) 
+
+full_ppt_sample %>% filter(sex == "F") %>% nrow()
+
+#----
+ids_only_reho <- final_reho_fd_age %>% distinct(lunaid, .keep_all = TRUE)
+merged <- merged_myelin_age %>%
+  full_join(final_icvf_fd_age, by = "lunaid") %>%
+  full_join(ids_only_reho, by = "lunaid") %>%  
+  full_join(subset_final_as_eog_age, by = "lunaid")
+n_distinct(merged$lunaid)
+merged %>%
+  filter(is.na(percent_corr_1_2)| is.na(RxdlPFC.x)| is.na(RxdlPFC.y) | is.na(RxdlPFC)) %>%
+  summarise(n_distinct(lunaid)) #112 subjects are contributing a piece of mr or behavioral data
+
+full_merged <- merged_myelin_age %>%
+  full_join(final_icvf_fd_age, by = "lunaid") %>%
+  full_join(ids_only_reho, by = "lunaid") %>%  
+  full_join(HabitMR_age_id_distinct, by = "lunaid")
+n_distinct(full_merged$lunaid)
+
+full_merged %>%
+  filter(!(is.na(RxdlPFC.x) & is.na(RxdlPFC.y) & is.na(RxdlPFC))) %>%
+  summarize(n_distinct(lunaid)) #175 subjects are contributing at least one piece of MR data THIS IS MY FULL SAMPLE SIZE TO REPORT IN ABSTRACT
+  
+  Habit_MR_age_studysample <- full_merged %>%
+    filter(!(is.na(RxdlPFC.x) & is.na(RxdlPFC.y) & is.na(RxdlPFC))) %>%
+    distinct(lunaid)
+  
+study_sample <- left_join(Habit_MR_age_studysample, HabitMR_age_id_distinct, by = "lunaid")  
+summary(study_sample$Dec_Age)
+sd(study_sample$Dec_Age)
+study_sample %>% filter(SEX == "F") %>% nrow()
+
+#___________________________________________________________________
+EEG_study_sample <- filter(HabitEEG_age_id_distinct, lunaid %in% study_sample$lunaid)
+length(unique(EEG_study_sample$lunaid)) #170
+```
+
+```{r}
+str(final_as_eog$lunaid)
+str(EEG_study_sample$lunaid)
+
+final_as_eog$lunaid <- as.character(final_as_eog$lunaid)
+EEG_study_sample$lunaid <- as.character(EEG_study_sample$lunaid)
+
+#merge age and as data
+#merge datasets on both 'ID' and 'vdate'
+final_as_eog_age <- final_as_eog %>% inner_join(EEG_study_sample, by = c("lunaid", "vdate"))
+count(final_as_eog_age, !is.na(AGE), !is.na(n_1))
+length(unique(final_as_eog_age$lunaid)) #145
+```
+
+```{r}
+#EXCLUSION CRITERIA
+#ppt has fewer than 25 viable trials (scored 0,1,2) and no more than 56 trials (n=56 for one session of this task)
+#for just NEUTRAL TRIALS max 29 trials; ppt has fewer than 14 viable trials (scored 0,1,2) and no more than 29 trials
+subset_final_as_eog_age <- subset(final_as_eog_age, total_trials>13 & total_trials<30)
+
+#ppt has less than 50% of "on-task" trials (scored 1,2) (out of all viable trials, the amount of trials they were "on task" should be more than 50%)
+subset_final_as_eog_age <- subset(subset_final_as_eog_age, percent_1_2>49)
+ex_final_as_eog_age <- subset(final_as_eog_age, total_trials<13 | total_trials>30 | percent_1_2<49)
+
+#excluded related to age? nope
+eog_excludeages <- lm(percent_corr_1_2 ~ Dec_Age, ex_final_as_eog_age)
+summary(eog_excludeages)
+
+#SKIP-----------------
+# #ppt is +/-2 SD from the mean for percent_ec_1_2, percent_corr_1_2, mean_lat_1, sd_lat_1
+# mean_percent_ec_1_2 <- mean(final_as_eog_age$percent_ec_1_2, na.rm=TRUE)
+# sd_percent_ec_1_2 <- sd(final_as_eog_age$percent_ec_1_2, na.rm=TRUE)
+# perersubset_final_as_eog_age <- subset(subset_final_as_eog_age, percent_ec_1_2 > (mean_percent_ec_1_2 - (2*sd_percent_ec_1_2)))
+# perersubset_final_as_eog_age <- subset(perersubset_final_as_eog_age, percent_ec_1_2 < (mean_percent_ec_1_2 + (2*sd_percent_ec_1_2))) #gets rid of 8 10-15yo
+# 
+# mean_percent_corr_1_2 <- mean(final_as_eog_age$percent_corr_1_2, na.rm=TRUE)
+# sd_percent_corr_1_2 <- sd(final_as_eog_age$percent_corr_1_2, na.rm=TRUE)
+# percosubset_final_as_eog_age <- 
+#   subset(subset_final_as_eog_age, percent_corr_1_2 > (mean_percent_corr_1_2 - (2*sd_percent_corr_1_2))) #gets rid of 8 10-15yo
+# percosubset_final_as_eog_age <- 
+#   subset(percosubset_final_as_eog_age, percent_corr_1_2 < (mean_percent_corr_1_2 + (2*sd_percent_corr_1_2)))
+# 
+# mean_mean_lat_1 <- mean(final_as_eog_age$mean_lat_1, na.rm=TRUE)
+# sd_mean_lat_1 <- sd(final_as_eog_age$mean_lat_1, na.rm=TRUE)
+# lacosubset_final_as_eog_age <- subset(subset_final_as_eog_age, mean_lat_1 > (mean_mean_lat_1 - (2*sd_mean_lat_1)))
+# lacosubset_final_as_eog_age <- subset(lacosubset_final_as_eog_age, mean_lat_1 < (mean_mean_lat_1 + (2*sd_mean_lat_1))) #gets rid of 11yo, 14yo
+# 
+# mean_sd_lat_1 <- mean(final_as_eog_age$sd_lat_1, na.rm=TRUE)
+# sd_sd_lat_1 <- sd(final_as_eog_age$sd_lat_1, na.rm=TRUE)
+# lavasubset_final_as_eog_age <- subset(subset_final_as_eog_age, sd_lat_1 > (mean_sd_lat_1 - (2*sd_sd_lat_1)))
+# lavasubset_final_as_eog_age <- subset(lavasubset_final_as_eog_age, sd_lat_1 < (mean_sd_lat_1 + (2*sd_sd_lat_1))) #gets rid of 9 ppts 10-13yo, 16yo, 19yo, 26yo
+
+length(unique(subset_final_as_eog_age$lunaid))
+summary(subset_final_as_eog_age$Dec_Age)
+subset_final_as_eog_age %>% filter(SEX == "F") %>% nrow()
+
+```
+
+```{r}
+#visualize variables
+plot(subset_final_as_eog_age$total_trials)
+mean(subset_final_as_eog_age$total_trials, na.rm = TRUE)
+sd(subset_final_as_eog_age$total_trials, na.rm = TRUE)
+range(subset_final_as_eog_age$total_trials, na.rm = TRUE)
+
+plot(subset_final_as_eog_age$trials_1_2)
+mean(subset_final_as_eog_age$trials_1_2, na.rm = TRUE)
+sd(subset_final_as_eog_age$trials_1_2, na.rm = TRUE)
+range(subset_final_as_eog_age$trials_1_2, na.rm = TRUE)
+
+plot(subset_final_as_eog_age$mean_lat_1)
+mean(final_as_eog_age$mean_lat_1, na.rm=TRUE)
+sd(final_as_eog_age$mean_lat_1, na.rm=TRUE)
+range(final_as_eog_age$mean_lat_1, na.rm = TRUE)
+
+plot(final_as_eog_age$percent_ec_1_2)
+mean(final_as_eog_age$percent_ec_1_2, na.rm=TRUE)
+sd(final_as_eog_age$percent_ec_1_2, na.rm=TRUE)
+range(final_as_eog_age$percent_ec_1_2, na.rm=TRUE)
+
+plot(final_as_eog_age$percent_corr_1_2)
+mean(final_as_eog_age$percent_corr_1_2, na.rm=TRUE)
+sd(final_as_eog_age$percent_corr_1_2, na.rm=TRUE)
+range(final_as_eog_age$percent_corr_1_2, na.rm=TRUE)
+```
+
+```{r}
+#gam age predicting percent error corrected trials (out of on-task trials (1,2), not viable trials (0,1,2))
+#significant
+model_per_ec <- gam(percent_ec_1_2 ~ s(Dec_Age), data=subset_final_as_eog_age, method = "REML", na.action = na.exclude)
+summary(model_per_ec)
+#plot
+mgcv::plot.gam(model_per_ec)
+draw(model_per_ec)
+ggplot(subset_final_as_eog_age, aes(Dec_Age, percent_ec_1_2)) +
+  geom_point() +
+  geom_smooth(method='gam', formula = (y ~ s(x, bs = "tp", k = 3))) +
+  theme_classic()
+####can exclude by deviation from residuals of model_per_ec
+subset_final_as_eog_age$percent_ec_1_2_resid <- resid(model_per_ec)
+subset_resid_per_ec <- subset(subset_final_as_eog_age, percent_ec_1_2_resid < (mean(percent_ec_1_2_resid) + 2*sd(percent_ec_1_2_resid)))
+subset_resid_per_ec <- subset(subset_resid_per_ec, percent_ec_1_2_resid > (mean(percent_ec_1_2_resid) - 2*sd(percent_ec_1_2_resid)))
+#run model again with new exclusion (10 less obs)
+#significant
+resid_model_per_ec <- gam(percent_ec_1_2 ~ s(Dec_Age), data=subset_resid_per_ec, method = "REML", na.action = na.exclude)
+summary(resid_model_per_ec)
+#plot
+ggper_ec <- ggplot(subset_resid_per_ec, aes(Dec_Age, percent_ec_1_2)) +
+  geom_point() +
+  geom_smooth(method='gam', formula = (y ~ s(x, bs = "tp", k=3)), color= "goldenrod") +
+  labs(x = "Age", y = "Percent of Error Corrected Trials") +
+  theme_classic() %>%
+  lunaize()
+ggsave(ggper_ec, 
+       filename = "ggper_ec.jpg",
+       device = "jpg",
+       height = 6, width = 5, units = "in")
+
+
+#gam age predicting percent correct trials (out of on-task trials not viable trials)
+#significant
+model_per_corr <- gam(percent_corr_1_2 ~ s(Dec_Age), data=subset_final_as_eog_age, method = "REML", na.action = na.exclude)
+summary(model_per_corr)
+#plot
+ggplot(subset_final_as_eog_age, aes(Dec_Age, percent_corr_1_2)) +
+  geom_point() +
+  geom_smooth(method='gam', formula = (y ~ s(x, bs = "tp"))) +
+  theme_classic()
+####can exclude by deviation from residuals of model_per_corr
+subset_final_as_eog_age$percent_corr_1_2_resid <- resid(model_per_corr)
+subset_resid_per_corr <- subset(subset_final_as_eog_age, percent_corr_1_2_resid < (mean(percent_corr_1_2_resid, na.rm = TRUE) + 2*sd(percent_corr_1_2_resid, na.rm = TRUE)))
+subset_resid_per_corr <- subset(subset_resid_per_corr, percent_corr_1_2_resid > (mean(percent_corr_1_2_resid, na.rm = TRUE) - 2*sd(percent_corr_1_2_resid, na.rm = TRUE)))
+#run model again with new exclusion (11 less obs)
+#significant
+resid_model_per_corr <- gam(percent_corr_1_2 ~ s(Dec_Age), data=subset_resid_per_corr, method = "REML", na.action = na.exclude)
+summary(resid_model_per_corr)
+ #plot
+ggper_corr <- ggplot(subset_resid_per_corr, aes(Dec_Age, percent_corr_1_2)) +
+  geom_point() +
+  geom_smooth(method='gam', formula = (y ~ s(x, bs = "tp", k=3)), color= "goldenrod") +
+  labs(x = "Age", y = "Percent of Correct Trials")+
+  theme_classic() +
+  paper_theme
+ggsave(filename = "ggper_corr.pdf",
+       plot = ggper_corr,
+       height = 4, width = 4, units = "in", bg = 'transparent')
+ggsave(ggper_corr, 
+       filename = "ggper_corr.jpg",
+       device = "jpg",
+       height = 6, width = 5, units = "in")
+
+#gam age predicting mean latency correct trials
+#not significant
+model_lat_corr<- gam(mean_lat_1 ~ s(Dec_Age), data=subset_final_as_eog_age, method = "REML", na.action = na.exclude)
+summary(model_lat_corr)
+#plot
+ggplot(subset_final_as_eog_age, aes(Dec_Age, mean_lat_1)) +
+  geom_point() +
+  geom_smooth(method='gam', formula = (y ~ s(x, bs = "tp"))) +
+  theme_classic()
+####can exclude by deviation from residuals of model_lat_corr
+subset_final_as_eog_age$mean_lat_1_resid <- resid(model_lat_corr)
+subset_resid_lat_corr <- subset(subset_final_as_eog_age, mean_lat_1_resid < (mean(mean_lat_1_resid) + 2*sd(mean_lat_1_resid)))
+subset_resid_lat_corr <- subset(subset_resid_lat_corr, mean_lat_1_resid > (mean(mean_lat_1_resid) - 2*sd(mean_lat_1_resid)))
+#run model again with new exclusion (6 less obs)
+#significant
+resid_model_lat_corr <- gam(mean_lat_1 ~ s(Dec_Age), data=subset_resid_lat_corr, method = "REML", na.action = na.exclude)
+summary(resid_model_lat_corr)
+#plot
+gg_latcorr <- ggplot(subset_resid_lat_corr, aes(Dec_Age, mean_lat_1)) +
+  geom_point() +
+  geom_smooth(method='gam', formula = (y ~ s(x, bs = "tp", k=3)), color= "goldenrod") +
+  labs(x = "Age", y = "Mean Latency of Correct Trials") +
+  theme_classic() +
+  paper_theme
+ggsave(filename = "gg_latcorr.pdf",
+       plot = gg_latcorr,
+       height = 4, width = 4, units = "in", bg = 'transparent')
+ggsave(gg_latcorr, 
+       filename = "gg_latcorr.jpg",
+       device = "jpg",
+       height = 6, width = 5, units = "in")
+
+#gam age predicting latency coefficient of variation for correct trials
+#significant
+model_latvar_corr<- gam(var_lat_1 ~ s(Dec_Age), data=subset_final_as_eog_age, method = "REML", na.action = na.exclude)
+summary(model_latvar_corr)
+#plot
+ggplot(subset_final_as_eog_age, aes(Dec_Age, var_lat_1)) +
+  geom_point() +
+  geom_smooth(method='gam', formula = (y ~ s(x, bs = "tp"))) +
+  theme_classic()
+####can exclude by deviation from residuals of model_latvar_corr (there's 1 person with NA sd because they only have 1 correct trial)
+subset_final_as_eog_age$var_lat_1_resid <- resid(model_latvar_corr)
+subset_resid_latvar_corr <- subset(subset_final_as_eog_age, var_lat_1_resid < (mean(var_lat_1_resid, na.rm=TRUE) + 2*sd(var_lat_1_resid, na.rm=TRUE)))
+subset_resid_latvar_corr <- subset(subset_resid_latvar_corr, var_lat_1_resid > (mean(var_lat_1_resid, na.rm=TRUE) - 2*sd(var_lat_1_resid, na.rm=TRUE)))
+#run model again with new exclusion (10 less obs)
+#significant
+resid_model_latvar_corr <- gam(var_lat_1 ~ s(Dec_Age), data=subset_resid_latvar_corr, method = "REML", na.action = na.exclude)
+summary(resid_model_latvar_corr)
+#plot
+gg_latvar <- ggplot(subset_resid_latvar_corr, aes(Dec_Age, var_lat_1)) +
+  geom_point() +
+  geom_smooth(method='gam', formula = (y ~ s(x, bs = "tp", k=3)), color= "goldenrod") +
+  labs(x = "Age", y = "Latency Variability of Correct Trials") +
+  theme_classic() +
+  paper_theme
+ggsave(filename = "gg_latvar.pdf",
+       plot = gg_latvar,
+       height = 4, width = 4, units = "in", bg = 'transparent')
+ggsave(gg_latvar, 
+       filename = "gg_latvar.jpg",
+       device = "jpg",
+       height = 6, width = 5, units = "in")
+#--------------------------------------------------------------------------------------------------------
+```
+
+```{r}
+#linear regressions
+#number of correct trials by age
+model_num_corr <- lm(n_1 ~ Dec_Age, subset_final_as_eog_age)
+summary(model_num_corr)
+
+ggplot(model_num_corr,aes(Dec_Age, n_1)) +
+  geom_point() +
+  geom_smooth(method='lm') +
+  theme_classic()
+
+#number of correct and ec trials by age
+model_num_corr_ec <- lm(trials_1_2 ~ Dec_Age, subset_final_as_eog_age)
+summary(model_num_corr_ec)
+
+ggplot(model_num_corr_ec,aes(Dec_Age, trials_1_2)) +
+  geom_point() +
+  geom_smooth(method='lm') +
+  theme_classic()
+
+#number of total trials by age
+model_num_total <- lm(total_trials ~ Dec_Age, subset_final_as_eog_age)
+summary(model_num_total)
+
+ggplot(model_num_total,aes(Dec_Age, total_trials)) +
+  geom_point() +
+  geom_smooth(method='lm') +
+  theme_classic()
+```
+
+```{r eval=FALSE, include=FALSE}
+#make nice tables
+install.packages("sjPlot")
+library(sjPlot)
+tab_model(model_per_ec, model_per_corr,
+          show.p = TRUE, show.stat = TRUE,
+          title = "Simple Regression Results Predicting Anti-Saccade Performance
+            From Age",
+          col.order = c("est", "stat", "p"), #removed "est" and "se"
+          pred.labels = c("Intercept", "Age"), #can give your variable names labels
+          dv.labels = c("Percent Error Corrected Trials", "Percent Correct Trials"), #column names
+          string.est = "Estimate",
+          string.stat = "Statistic",
+          string.p = "p-value",
+          file = "output1.doc")
+```
