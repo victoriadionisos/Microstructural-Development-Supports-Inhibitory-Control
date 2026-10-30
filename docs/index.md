@@ -1,6 +1,6 @@
 <br>
 
-# Developmental Interactions between Local and Long-Range Connectivity, Gray Matter Microstructure, and Inhibitory Control from Adolescence to Young Adulthood 
+# Developmental Changes in Gray Matter Microstructure and Local Brain Connectivity Support Inhibitory Control from Adolescence to Young Adulthood 
 
 ### Project Lead
 Victoria Dionisos
@@ -15,7 +15,7 @@ March 2025
 In progress 
 
 ### Datasets
-LNCD Habit
+LNCD Cross-Sectional Habit 3T
 
 ### Github Repository
 [[https://github.com/LabNeuroCogDevel/Antisaccade-impulsive-control/tree/main]]
